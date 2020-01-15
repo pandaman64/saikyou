@@ -1,6 +1,7 @@
 //! type inference & checking
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 use crate::alpha::{AlphaExpr, AlphaFunc, DefId};
 use crate::ast::*;
@@ -22,6 +23,45 @@ impl AstExt for TypeExt {
     type FunExt = TypeId;
 }
 
+struct DisplayTypedExpr<'e, 'c>(&'e TypedExpr, &'c TypeContext);
+
+impl fmt::Display for DisplayTypedExpr<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use Expr::*;
+
+        let DisplayTypedExpr(expr, ctx) = self;
+
+        match expr {
+            IntLit(v) => write!(f, "{}", v),
+            Var((name, tid)) => write!(f, "(`{}`: {})", name.0, DisplayType(*tid, ctx)),
+            BinOp(kind, lhs, rhs, tid) => write!(
+                f,
+                "({} {} {}: {})",
+                Self(lhs, ctx),
+                kind,
+                Self(rhs, ctx),
+                DisplayType(*tid, ctx),
+            ),
+            Call(fun, args, tid) => {
+                write!(f, "({}", Self(fun, ctx))?;
+                for arg in args.iter() {
+                    write!(f, " {}", Self(arg, ctx))?;
+                }
+                write!(f, ": {})", DisplayType(*tid, ctx))
+            }
+            Let((name, vty, bodyty), e, body) => write!(
+                f,
+                "(let `{}`: {} = {}\n{}: {})",
+                name.0,
+                DisplayType(*vty, ctx),
+                Self(e, ctx),
+                Self(body, ctx),
+                DisplayType(*bodyty, ctx),
+            ),
+        }
+    }
+}
+
 impl TypedExpr {
     fn ty(&self) -> TypeId {
         use Expr::*;
@@ -33,50 +73,31 @@ impl TypedExpr {
     }
 
     pub fn pprint(&self, ctx: &TypeContext) -> String {
-        use Expr::*;
-
-        match self {
-            IntLit(v) => v.to_string(),
-            Var((name, tid)) => format!("(`{}`: {})", name.0, tid.pprint(ctx)),
-            BinOp(kind, lhs, rhs, tid) => format!(
-                "({} {} {}: {})",
-                lhs.pprint(ctx),
-                kind,
-                rhs.pprint(ctx),
-                tid.pprint(ctx)
-            ),
-            Call(f, args, tid) => format!(
-                "({} {:?}: {})",
-                f.pprint(ctx),
-                args.iter().map(|arg| arg.pprint(ctx)).collect::<Vec<_>>(),
-                tid.pprint(ctx)
-            ),
-            Let((name, vty, bodyty), e, body) => format!(
-                "(let `{}`: {} = {};\n{}: {})",
-                name.0,
-                vty.pprint(ctx),
-                e.pprint(ctx),
-                body.pprint(ctx),
-                bodyty.pprint(ctx)
-            ),
-        }
+        format!("{}", DisplayTypedExpr(self, ctx))
     }
 }
 
 struct DisplayTypedFunc<'f, 'c>(&'f TypedFunc, &'c TypeContext);
 
-impl std::fmt::Display for DisplayTypedFunc<'_, '_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl fmt::Display for DisplayTypedFunc<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let DisplayTypedFunc(func, ctx) = self;
         match &ctx.types[func.ext.0] {
-            Type::Fun(argsty, bodyty) => {
-                write!(f, "fun `{}` ", func.name.0)?;
-                for (arg, argty) in func.arguments.iter().zip(argsty.iter()) {
-                    write!(f, "(`{}`: {}) ", arg.0, argty.pprint(ctx))?;
+            Type::Fun(genargsty, argsty, bodyty) => {
+                write!(f, "fun `{}`", func.name.0)?;
+                if !genargsty.is_empty() {
+                    write!(f, "[forall")?;
+                    for genargty in genargsty.iter() {
+                        write!(f, " {}", DisplayType(*genargty, ctx))?
+                    }
+                    write!(f, "]")?
                 }
-                write!(f, ": {} =\n\t", bodyty.pprint(ctx))?;
+                for (arg, argty) in func.arguments.iter().zip(argsty.iter()) {
+                    write!(f, "(`{}`: {}) ", arg.0, DisplayType(*argty, ctx))?;
+                }
+                write!(f, ": {} =\n\t", DisplayType(*bodyty, ctx))?;
 
-                write!(f, "{}", func.body.pprint(ctx))
+                write!(f, "{}", DisplayTypedExpr(&func.body, ctx))
             }
             _ => unreachable!("malformed function: {:?}", func),
         }
@@ -89,14 +110,8 @@ impl TypedFunc {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TypeId(pub usize);
-
-impl TypeId {
-    pub fn pprint(&self, ctx: &TypeContext) -> String {
-        ctx.types[self.0].pprint(ctx)
-    }
-}
 
 // id of simple types
 const INT: TypeId = TypeId(0);
@@ -118,28 +133,47 @@ mod test {
 pub enum Type {
     Int,
     Var(TypeId),
-    Fun(Vec<TypeId>, TypeId),
+    ForallVar(TypeId),
+    // forall T, (X, ..., Z) -> R
+    Fun(HashSet<TypeId>, Vec<TypeId>, TypeId),
 }
 
-impl Type {
-    pub fn pprint(&self, ctx: &TypeContext) -> String {
+struct DisplayType<'c>(TypeId, &'c TypeContext);
+
+impl fmt::Display for DisplayType<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use Type::*;
 
-        match self {
-            Type::Int => "int".to_string(),
+        let DisplayType(tid, ctx) = self;
+
+        match &ctx.types[tid.0] {
+            Int => write!(f, "int"),
             Var(idx) => {
                 let root = ctx.get_root(*idx);
-                if root.0 == idx.0 {
-                    format!("\\{}", idx.0)
+                if matches!(ctx.types[root.0], Var(v) if v == root) {
+                    write!(f, "${}", root.0)
                 } else {
-                    ctx.types[root.0].pprint(ctx)
+                    write!(f, "{}", Self(root, ctx))
                 }
             }
-            Fun(args, body) => format!(
-                "{:?} -> {}",
-                args.iter().map(|arg| arg.pprint(ctx)).collect::<Vec<_>>(),
-                body.pprint(ctx)
-            ),
+            ForallVar(idx) => write!(f, "#{}", idx.0),
+            Fun(genargs, args, body) => {
+                write!(f, "(")?;
+
+                if !genargs.is_empty() {
+                    write!(f, "[forall")?;
+                    for genarg in genargs.iter() {
+                        write!(f, " {}", Self(*genarg, ctx))?;
+                    }
+                    write!(f, "]")?;
+                }
+
+                for arg in args.iter() {
+                    write!(f, "{} -> ", Self(*arg, ctx))?;
+                }
+
+                write!(f, "{})", Self(*body, ctx))
+            }
         }
     }
 }
@@ -186,6 +220,12 @@ pub struct TypeContext {
     types: Vec<Type>,
 }
 
+impl Default for TypeContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeContext {
     pub fn new() -> Self {
         Self {
@@ -217,7 +257,11 @@ impl TypeContext {
                     self.get_root(idx)
                 }
             }
-            Fun(_, _) => ty,
+            ForallVar(idx) => {
+                assert_eq!(ty, idx);
+                ty
+            }
+            Fun(_, _, _) => ty,
         }
     }
 
@@ -243,14 +287,19 @@ impl TypeContext {
                 self.types[ty.0] = Var(root);
                 root
             }
-            Fun(mut args, body) => {
+            ForallVar(idx) => {
+                assert_eq!(ty, idx);
+                self.types[ty.0] = ForallVar(idx);
+                ty
+            }
+            Fun(genargs, mut args, body) => {
                 // compression
                 for arg in args.iter_mut() {
                     *arg = self.resolve(*arg);
                 }
                 let body = self.resolve(body);
 
-                self.types[ty.0] = Fun(args, body);
+                self.types[ty.0] = Fun(genargs, args, body);
                 ty
             }
         }
@@ -271,8 +320,13 @@ impl TypeContext {
         let mut rhs = replace(&mut self.types[irhs.0], Var(PLACEHOLDER));
 
         match (&mut lhs, &mut rhs) {
+            (ForallVar(_), _) | (_, ForallVar(_)) => {
+                unreachable!("not instantiated: {:?} or {:?}\nctx: {:?}", lhs, rhs, self)
+            }
             (Int, Int) => {}
-            (Fun(largs, lbody), Fun(rargs, rbody)) => {
+            (Fun(lgenargs, largs, lbody), Fun(rgenargs, rargs, rbody)) => {
+                assert!(lgenargs.is_empty() && rgenargs.is_empty());
+
                 if largs.len() != rargs.len() {
                     return Err(anyhow::anyhow!(
                         "arity mismatch: {:?} vs {:?}",
@@ -301,6 +355,137 @@ impl TypeContext {
         Ok(())
     }
 
+    #[must_use]
+    fn generalize_ty(&mut self, ty: TypeId) -> HashSet<TypeId> {
+        use Type::*;
+
+        let mut ret = HashSet::new();
+
+        let root = self.resolve(ty);
+        match std::mem::replace(&mut self.types[root.0], Var(PLACEHOLDER)) {
+            Var(v) if v == ty => {
+                ret.insert(root);
+                self.types[root.0] = ForallVar(ty)
+            }
+            Fun(genargs, args, body) => {
+                assert!(genargs.is_empty());
+
+                for arg in args.iter() {
+                    ret.extend(self.generalize_ty(*arg));
+                }
+                ret.extend(self.generalize_ty(body));
+
+                self.types[root.0] = Fun(genargs, args, body);
+            }
+            t => {
+                self.types[root.0] = t;
+            }
+        }
+
+        ret
+    }
+
+    #[must_use]
+    fn generalize(&mut self, expr: &TypedExpr) -> HashSet<TypeId> {
+        use Expr::*;
+
+        let mut ret = HashSet::new();
+
+        match expr {
+            IntLit(_) => {}
+            Var(_) => ret.extend(self.generalize_ty(expr.ty())),
+            BinOp(_, lhs, rhs, retty) => {
+                ret.extend(self.generalize(lhs));
+                ret.extend(self.generalize(rhs));
+                ret.extend(self.generalize_ty(*retty));
+            }
+            Call(f, args, retty) => {
+                ret.extend(self.generalize(f));
+                for arg in args.iter() {
+                    ret.extend(self.generalize(arg));
+                }
+                ret.extend(self.generalize_ty(*retty));
+            }
+            Let((_, binderty, bodyty), e, body) => {
+                ret.extend(self.generalize(e));
+                ret.extend(self.generalize(body));
+
+                ret.extend(self.generalize_ty(*binderty));
+                ret.extend(self.generalize_ty(*bodyty));
+            }
+        }
+
+        ret
+    }
+
+    fn instantiate(&mut self, env: &mut HashMap<TypeId, TypeId>, ty: TypeId) -> TypeId {
+        use Type::*;
+
+        match std::mem::replace(&mut self.types[ty.0], Var(PLACEHOLDER)) {
+            Int => {
+                self.types[ty.0] = Int;
+                ty
+            }
+            Var(tid) => {
+                self.types[ty.0] = Var(tid);
+                let root = self.resolve(tid);
+                if root == ty {
+                    ty
+                } else {
+                    self.instantiate(env, root)
+                }
+            }
+            ForallVar(tid) => {
+                assert_eq!(ty, tid);
+
+                self.types[ty.0] = ForallVar(tid);
+                // assign a fresh variable to this generalized type argument
+                *env.entry(ty).or_insert_with(|| self.new_type_var())
+            }
+            // generalize forall arguments of fun
+            Fun(genargs, args, body) => {
+                for genarg in genargs.iter() {
+                    env.entry(*genarg).or_insert_with(|| self.new_type_var());
+                }
+
+                let new_args = args.iter().map(|&arg| self.instantiate(env, arg)).collect();
+                let new_body = self.instantiate(env, body);
+                let new_funty = Fun(HashSet::new(), new_args, new_body);
+
+                self.types[ty.0] = Fun(genargs, args, body);
+                let ty = self.new_type(new_funty);
+                assert!(
+                    !self.contains_generalized(ty),
+                    "instantiated = {}",
+                    DisplayType(ty, self)
+                );
+                ty
+            }
+        }
+    }
+
+    fn contains_generalized(&self, ty: TypeId) -> bool {
+        use Type::*;
+
+        match &self.types[self.get_root(ty).0] {
+            Int | Var(_) => false,
+            ForallVar(_) => true,
+            Fun(genargs, args, body) => {
+                (!genargs.is_empty())
+                    || args.iter().any(|ty| self.contains_generalized(*ty))
+                    || self.contains_generalized(*body)
+            }
+        }
+    }
+
+    fn check_no_placeholder(&self) {
+        for ty in self.types.iter() {
+            if matches!(ty, Type::Var(p) if *p == PLACEHOLDER) {
+                panic!("invalid type");
+            }
+        }
+    }
+
     pub fn infer_expr(
         &mut self,
         env: &mut Environment,
@@ -315,8 +500,19 @@ impl TypeContext {
                 let ty = env
                     .map
                     .get(&x)
+                    .map(|ty| self.instantiate(&mut HashMap::new(), *ty))
                     .ok_or_else(|| anyhow::anyhow!("{:?} not found in {:?}", x, env))?;
-                Var((x, self.resolve(*ty)))
+                assert!(
+                    !self.contains_generalized(ty),
+                    "{:?} contains generalized var while referring to {:?}\nctx: {:?}\nenv: {:?}",
+                    ty,
+                    x,
+                    self,
+                    env
+                );
+
+                self.check_no_placeholder();
+                Var((x, self.resolve(ty)))
             }
             BinOp(kind, lhs, rhs, ()) => {
                 let lhs = self.infer_expr(env, *lhs)?;
@@ -325,6 +521,8 @@ impl TypeContext {
                 // currently, support only integer operators
                 self.unify(lhs.ty(), INT)?;
                 self.unify(rhs.ty(), INT)?;
+
+                self.check_no_placeholder();
 
                 BinOp(kind, Box::new(lhs), Box::new(rhs), INT)
             }
@@ -335,9 +533,27 @@ impl TypeContext {
                     .map(|arg| self.infer_expr(env, arg))
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 let retty = self.new_type_var();
-                let fty = self.new_type(Type::Fun(args.iter().map(TypedExpr::ty).collect(), retty));
+                let fty = self.new_type(Type::Fun(
+                    HashSet::new(),
+                    args.iter().map(TypedExpr::ty).collect(),
+                    retty,
+                ));
+                for arg in args.iter() {
+                    assert!(
+                        !self.contains_generalized(arg.ty()),
+                        "arg contains generalized var: args = {:?}",
+                        args
+                    );
+                }
+                assert!(
+                    !self.contains_generalized(fty),
+                    "fty contains generalized var: args = {:?}",
+                    args
+                );
 
                 self.unify(f.ty(), fty)?;
+
+                self.check_no_placeholder();
 
                 Call(Box::new(f), args, retty)
             }
@@ -346,6 +562,8 @@ impl TypeContext {
 
                 let xty = self.new_type_var();
                 self.unify(xty, e.ty())?;
+
+                self.check_no_placeholder();
 
                 let body = env.enter(x, xty, move |env| self.infer_expr(env, *body))?;
 
@@ -370,7 +588,7 @@ impl TypeContext {
             if i == len {
                 let body = this.infer_expr(env, func.body)?;
 
-                let funty = this.new_type(Type::Fun(arg_ty, body.ty()));
+                let funty = this.new_type(Type::Fun(HashSet::new(), arg_ty, body.ty()));
 
                 Ok(Function {
                     name: func.name,
@@ -387,6 +605,28 @@ impl TypeContext {
 
         let len = func.arguments.len();
         let arg_ty = func.arguments.iter().map(|_| self.new_type_var()).collect();
-        go(0, len, self, env, arg_ty, func)
+        let func = go(0, len, self, env, arg_ty, func)?;
+
+        let body_genargs = self.generalize(&func.body);
+        match std::mem::replace(&mut self.types[func.ext.0], Type::Var(PLACEHOLDER)) {
+            Type::Fun(mut genargs, args, body) => {
+                assert!(genargs.is_empty());
+
+                genargs.extend(body_genargs);
+
+                for arg in args.iter() {
+                    genargs.extend(self.generalize_ty(*arg));
+                }
+
+                genargs.extend(self.generalize_ty(body));
+
+                self.types[func.ext.0] = Type::Fun(genargs, args, body);
+            }
+            _ => unreachable!("must be Fun"),
+        }
+
+        self.check_no_placeholder();
+
+        Ok(func)
     }
 }
