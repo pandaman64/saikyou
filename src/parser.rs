@@ -6,13 +6,27 @@ use nom::error::VerboseError;
 use nom::multi::*;
 use nom::sequence::*;
 
-use crate::ast::*;
+use crate::ast;
+use crate::ast::{AstExt, OpKind};
 
 // fun f x y =
 //   let z = g x;
 //   y + z.
 
+#[derive(Clone, Debug)]
+pub enum ParserExt {}
+
+impl<'s> AstExt<'s> for ParserExt {
+    type Var = ();
+    type BinOp = ();
+    type Call = ();
+    type Let = ();
+}
+
 type IResult<I, O> = nom::IResult<I, O, VerboseError<I>>;
+
+type Expr<'s> = ast::Expr<'s, ParserExt>;
+type Function<'s> = ast::Function<'s, ParserExt>;
 
 fn identifier(input: &str) -> IResult<&str, &str> {
     // first must be the subset of the following
@@ -40,7 +54,7 @@ fn expression(input: &str) -> IResult<&str, Expr> {
 
         fn var(input: &str) -> IResult<&str, Expr> {
             let (input, ident) = identifier(input)?;
-            Ok((input, Expr::Var(ident)))
+            Ok((input, Expr::Var(ident, ())))
         }
 
         fn intlit(input: &str) -> IResult<&str, Expr> {
@@ -71,7 +85,7 @@ fn expression(input: &str) -> IResult<&str, Expr> {
         if args.is_empty() {
             Ok((input, f))
         } else {
-            Ok((input, Expr::Call(Box::new(f), args)))
+            Ok((input, Expr::Call(Box::new(f), args, ())))
         }
     }
 
@@ -94,7 +108,7 @@ fn expression(input: &str) -> IResult<&str, Expr> {
 
         // TODO: not ideal, because fold_many0 requires Clone
         fold_many0(following, lhs, |lhs, (op, rhs)| {
-            Expr::BinOp(op, Box::new(lhs), Box::new(rhs))
+            Expr::BinOp(op, Box::new(lhs), Box::new(rhs), ())
         })(input)
     }
 
@@ -117,7 +131,7 @@ fn expression(input: &str) -> IResult<&str, Expr> {
 
         // TODO: not ideal, because fold_many0 requires Clone
         fold_many0(following, lhs, |lhs, (op, rhs)| {
-            Expr::BinOp(op, Box::new(lhs), Box::new(rhs))
+            Expr::BinOp(op, Box::new(lhs), Box::new(rhs), ())
         })(input)
     }
 
@@ -139,7 +153,7 @@ fn expression(input: &str) -> IResult<&str, Expr> {
 
         let (input, body) = expression(input)?;
 
-        Ok((input, Expr::Let(var, Box::new(e), Box::new(body))))
+        Ok((input, Expr::Let(var, Box::new(e), Box::new(body), ())))
     }
 
     alt((let_, addmin))(input)
