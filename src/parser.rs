@@ -6,6 +6,8 @@ use nom::error::VerboseError;
 use nom::multi::*;
 use nom::sequence::*;
 
+use std::marker::PhantomData;
+
 use crate::ast;
 use crate::ast::{AstExt, OpKind};
 
@@ -14,19 +16,22 @@ use crate::ast::{AstExt, OpKind};
 //   y + z.
 
 #[derive(Clone, Debug)]
-pub enum ParserExt {}
+pub struct ParserExt<'s>(PhantomData<&'s ()>);
 
-impl<'s> AstExt<'s> for ParserExt {
-    type Var = ();
+impl<'s> AstExt for ParserExt<'s> {
+    type Var = &'s str;
     type BinOp = ();
     type Call = ();
-    type Let = ();
+    type Let = &'s str;
+
+    type FunName = &'s str;
+    type FunArg = &'s str;
 }
 
 type IResult<I, O> = nom::IResult<I, O, VerboseError<I>>;
 
-type Expr<'s> = ast::Expr<'s, ParserExt>;
-type Function<'s> = ast::Function<'s, ParserExt>;
+type Expr<'s> = ast::Expr<ParserExt<'s>>;
+type Function<'s> = ast::Function<ParserExt<'s>>;
 
 fn identifier(input: &str) -> IResult<&str, &str> {
     // first must be the subset of the following
@@ -54,7 +59,7 @@ fn expression(input: &str) -> IResult<&str, Expr> {
 
         fn var(input: &str) -> IResult<&str, Expr> {
             let (input, ident) = identifier(input)?;
-            Ok((input, Expr::Var(ident, ())))
+            Ok((input, Expr::Var(ident)))
         }
 
         fn intlit(input: &str) -> IResult<&str, Expr> {
@@ -153,7 +158,7 @@ fn expression(input: &str) -> IResult<&str, Expr> {
 
         let (input, body) = expression(input)?;
 
-        Ok((input, Expr::Let(var, Box::new(e), Box::new(body), ())))
+        Ok((input, Expr::Let(var, Box::new(e), Box::new(body))))
     }
 
     alt((let_, addmin))(input)
