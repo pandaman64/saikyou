@@ -10,6 +10,7 @@ pub trait AstExt: Clone + Debug {
 
     type FunName: Clone + Debug;
     type FunArg: Clone + Debug;
+    type FunExt: Clone + Debug;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -18,6 +19,19 @@ pub enum OpKind {
     Minus,
     Mul,
     Div,
+}
+
+impl std::fmt::Display for OpKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        use OpKind::*;
+
+        match self {
+            Add => write!(f, "+"),
+            Minus => write!(f, "-"),
+            Mul => write!(f, "*"),
+            Div => write!(f, "/"),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -34,4 +48,5 @@ pub struct Function<Ext: AstExt> {
     pub name: Ext::FunName,
     pub arguments: Vec<Ext::FunArg>,
     pub body: Expr<Ext>,
+    pub ext: Ext::FunExt,
 }

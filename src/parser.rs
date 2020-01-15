@@ -26,6 +26,7 @@ impl<'s> AstExt for ParserExt<'s> {
 
     type FunName = &'s str;
     type FunArg = &'s str;
+    type FunExt = ();
 }
 
 type IResult<I, O> = nom::IResult<I, O, VerboseError<I>>;
@@ -188,6 +189,7 @@ fn function(input: &str) -> IResult<&str, Function> {
             name,
             arguments,
             body,
+            ext: (),
         },
     ))
 }
