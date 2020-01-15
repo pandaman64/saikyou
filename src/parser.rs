@@ -165,7 +165,7 @@ fn expression(input: &str) -> IResult<&str, Expr> {
     alt((let_, addmin))(input)
 }
 
-fn function(input: &str) -> IResult<&str, Function> {
+pub fn function(input: &str) -> IResult<&str, Function> {
     let (input, _) = tag("fun")(input)?;
     let (input, _) = multispace1(input)?;
 
@@ -197,7 +197,7 @@ fn function(input: &str) -> IResult<&str, Function> {
 pub fn program(input: &str) -> IResult<&str, Vec<Function>> {
     all_consuming(delimited(
         multispace0,
-        separated_nonempty_list(multispace0, function),
+        separated_list(multispace1, function),
         multispace0,
     ))(input)
 }

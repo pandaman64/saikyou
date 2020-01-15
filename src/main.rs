@@ -4,14 +4,12 @@ pub mod parser;
 pub mod typing;
 
 fn main() -> anyhow::Result<()> {
-    let program = r#"
-fun f x = x + 10.
+    let program = r#"fun f x = x + 10.
 fun g x y = 
     let x = f x;
     y + x.
 fun h x = g x x.
-fun const x y = x.
-"#;
+fun const x y = x."#;
 
     let (_, functions) = parser::program(program)?;
     for f in functions.iter() {
